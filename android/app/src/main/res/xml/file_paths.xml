@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets the share sheet read the session card image the app saves in cache/share/. -->
+<paths>
+    <cache-path name="share" path="share/" />
+</paths>

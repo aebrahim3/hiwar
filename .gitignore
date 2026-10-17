@@ -1,0 +1,32 @@
+# --- Secrets: never commit these ---
+.env
+fo_tokens.json
+
+# --- Local data ---
+*.db
+*.db-journal
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Android / Gradle ---
+.gradle/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# --- IDEs / OS ---
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
