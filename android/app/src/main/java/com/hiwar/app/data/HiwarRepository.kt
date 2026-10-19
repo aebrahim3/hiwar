@@ -10,16 +10,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import retrofit2.HttpException
+import kotlinx.coroutines.CancellationException
 import java.io.IOException
-import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
  * The only class ViewModels talk to. It hides Retrofit and turns network
  * failures into readable messages, so screens just handle Result success/failure.
  */
-@Singleton
-class HiwarRepository @Inject constructor(private val api: HiwarApi) {
+class HiwarRepository(private val api: HiwarApi) {
 
     suspend fun health() = call { api.health() }
 
@@ -86,5 +84,9 @@ class HiwarRepository @Inject constructor(private val api: HiwarApi) {
             Result.failure(Exception(detail ?: "Server error ${e.code()}"))
         } catch (e: IOException) {
             Result.failure(Exception("Can't reach the Hiwar server. Is the backend running?"))
+        } catch (e: CancellationException) {
+            throw e // let coroutine cancellation work normally
+        } catch (e: Exception) {
+            Result.failure(Exception("Unexpected response: ${e.message}"))
         }
 }

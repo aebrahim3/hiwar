@@ -24,6 +24,9 @@ logging.basicConfig(level=logging.INFO)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    stuck = db.fail_interrupted_sessions()
+    if stuck:
+        logging.getLogger("hiwar").warning("Marked %s interrupted session(s) as failed after restart", stuck)
     task = asyncio.create_task(practice.scheduler_loop())
     yield
     task.cancel()
@@ -69,6 +72,7 @@ class SessionRequest(BaseModel):
     language: str = config.TARGET_LANGUAGE
     level: Level = "beginner"
     duration_minutes: int = Field(10, ge=2, le=60)
+    email_report: bool = Field(False, description="Also have Fo email you the report (it's always in the app)")
 
     _topic = field_validator("topic")(classmethod(lambda cls, v: _clean_topic(v)))
     _scenario = field_validator("scenario")(classmethod(lambda cls, v: _clean_scenario(v)))
@@ -79,6 +83,7 @@ class ScheduleRequest(BaseModel):
     topic: str | None = Field(None, max_length=200)
     scenario: str | None = Field(None, description="Role-play scenario id from GET /scenarios")
     add_to_calendar: bool = Field(False, description="Ask Fo to put this schedule on your Google Calendar")
+    email_report: bool = Field(False, description="Also have Fo email you each session's report")
     language: str = config.TARGET_LANGUAGE
     level: Level = "beginner"
     duration_minutes: int = Field(10, ge=2, le=60)
@@ -158,7 +163,7 @@ async def start_now(req: SessionRequest):
     if db.active_session():
         raise HTTPException(409, "A session is already in progress.")
     session_id = practice.start_session(None, req.topic, req.language, req.level, req.duration_minutes,
-                                        req.scenario)
+                                        req.scenario, req.email_report)
     return db.get_session(session_id)
 
 
@@ -192,6 +197,18 @@ def share_session(session_id: int):
     if s["status"] != "complete":
         raise HTTPException(400, "You can share a session once it's complete.")
     return progress.share_card(s)
+
+
+@app.post("/sessions/{session_id}/cancel")
+def cancel_session(session_id: int):
+    """Cancel a session that's still in progress (frees you to start a new one)."""
+    s = db.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if s["status"] in ("complete", "failed"):
+        return s
+    practice.cancel_session(session_id)
+    return db.get_session(session_id)
 
 
 @app.patch("/sessions/{session_id}")

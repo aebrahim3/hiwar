@@ -72,6 +72,8 @@ for _table, _col, _decl in [
     ("schedules", "scenario", "TEXT"),
     ("schedules", "calendar_status", "TEXT"),    # NULL | adding | added | failed | removing
     ("schedules", "calendar_note", "TEXT"),      # Fo's reply or the error, for the app to show
+    ("sessions", "email_report", "INTEGER NOT NULL DEFAULT 0"),   # 1 = Fo also emails the report
+    ("schedules", "email_report", "INTEGER NOT NULL DEFAULT 0"),
 ]:
     if _col not in _columns(_table):
         _conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_decl}")
@@ -105,15 +107,16 @@ def _schedule(row: sqlite3.Row) -> dict:
     d = dict(row)
     d["weekdays"] = json.loads(d["weekdays"])
     d["active"] = bool(d["active"])
+    d["email_report"] = bool(d.get("email_report"))
     return d
 
 
 def create_schedule(s: dict) -> int:
     cur = _exec(
-        "INSERT INTO schedules (title, topic, scenario, language, level, duration_minutes, frequency, weekdays, "
+        "INSERT INTO schedules (title, topic, scenario, email_report, language, level, duration_minutes, frequency, weekdays, "
         "interval_days, time_of_day, timezone, start_date, active, next_run_at, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
-        (s["title"], s["topic"], s.get("scenario"), s["language"], s["level"], s["duration_minutes"],
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        (s["title"], s["topic"], s.get("scenario"), int(bool(s.get("email_report"))), s["language"], s["level"], s["duration_minutes"],
          s["frequency"], json.dumps(s["weekdays"]), s["interval_days"], s["time_of_day"], s["timezone"],
          s["start_date"], s["next_run_at"], now_iso()),
     )
@@ -157,16 +160,17 @@ def _session(row: sqlite3.Row) -> dict:
     d["breakdown"] = json.loads(d["breakdown"]) if d["breakdown"] else None
     d["saved"] = None if d["saved"] is None else bool(d["saved"])
     d["mock"] = bool(d.get("mock"))
+    d["email_report"] = bool(d.get("email_report"))
     d.pop("conversation_id", None)  # internal handle, never sent to the app
     return d
 
 
 def create_session(schedule_id: int | None, topic: str | None, language: str, level: str, duration: int,
-                   scenario: str | None = None) -> int:
+                   scenario: str | None = None, email_report: bool = False) -> int:
     cur = _exec(
-        "INSERT INTO sessions (schedule_id, status, progress, topic, scenario, language, level, "
-        "duration_minutes, started_at) VALUES (?, 'calling', 'Asking Fo to call you', ?, ?, ?, ?, ?, ?)",
-        (schedule_id, topic, scenario, language, level, duration, now_iso()),
+        "INSERT INTO sessions (schedule_id, status, progress, topic, scenario, email_report, language, level, "
+        "duration_minutes, started_at) VALUES (?, 'calling', 'Asking Fo to call you', ?, ?, ?, ?, ?, ?, ?)",
+        (schedule_id, topic, scenario, int(email_report), language, level, duration, now_iso()),
     )
     return cur.lastrowid
 
@@ -195,6 +199,16 @@ def completed_sessions(include_mock: bool = False) -> list[dict]:
 def list_sessions(saved_only: bool = False) -> list[dict]:
     sql = "SELECT * FROM sessions" + (" WHERE saved = 1" if saved_only else "") + " ORDER BY started_at DESC"
     return [_session(r) for r in _all(sql)]
+
+
+def fail_interrupted_sessions() -> int:
+    """Called on startup: sessions still 'in progress' were running in a server process that
+    no longer exists (restart, crash, laptop sleep), so nothing will ever finish them."""
+    cur = _exec(
+        "UPDATE sessions SET status = 'failed', progress = 'Interrupted: the backend restarted during the session. "
+        "Start a new one.' WHERE status IN ('calling', 'in_call', 'summarizing')"
+    )
+    return cur.rowcount
 
 
 def active_session() -> dict | None:

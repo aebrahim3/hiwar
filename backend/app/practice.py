@@ -32,6 +32,7 @@ LEVEL_GUIDE = {
 JSON_START, JSON_END = "SESSION_JSON_START", "SESSION_JSON_END"
 TX_START, TX_END = "TRANSCRIPT_START", "TRANSCRIPT_END"
 _running: set[int] = set()
+_tasks: dict[int, asyncio.Task] = {}   # session id -> the task running it, so it can be cancelled
 
 RESULT_FORMAT = f"""send the results in exactly this format:
 
@@ -55,8 +56,16 @@ RESULT_FORMAT = f"""send the results in exactly this format:
 List every mistake you noticed, not just a few. Use [] for any list with nothing in it."""
 
 
+EMAIL_ON = """After the call, also email me a detailed written report with these sections:
+Summary; Fluency; Every mistake (what I said, the correction, the rule, and another example);
+Highlights; Improvements with a short drill for each; Vocabulary from the session;
+Focus for next session; and the full transcript."""
+EMAIL_OFF = "Don't email me a report for this session; my practice app shows it from the results below."
+
+
 def build_brief(language: str, level: str, minutes: int, topic: str | None, revisit: list[dict],
-                focus: str | None = None, scenario: dict | None = None) -> str:
+                focus: str | None = None, scenario: dict | None = None,
+                email_report: bool = False) -> str:
     """The instructions Fo gets before each session. Turn-taking wording is Fo's own suggestion."""
     if scenario:
         topic_line = "\n\n" + scenarios.brief_block(scenario) + (f"\nExtra detail for the scene: {topic}." if topic else "") + "\n"
@@ -74,7 +83,7 @@ def build_brief(language: str, level: str, minutes: int, topic: str | None, revi
     return f"""Please call me now for a {minutes}-minute {language} speaking practice session.
 
 I'm a {level} learner.{topic_line if scenario else " " + topic_line}
-Run the conversation in {language} only. {LEVEL_GUIDE.get(level, LEVEL_GUIDE["beginner"])}
+Run the conversation in {language} only (the feedback at the end is in English, see the hard rules below). {LEVEL_GUIDE.get(level, LEVEL_GUIDE["beginner"])}
 If I say I don't understand (e.g. "لا أفهم"), repeat the question more simply with easier words.
 If I still don't understand, say the key word in English once, then carry on in {language}.
 Keep me talking: ask open questions and follow-ups, and don't correct me mid-conversation
@@ -84,17 +93,23 @@ Turn-taking (important): silence is normal, not a prompt to speak. When I pause 
 wait about {config.PAUSE_SECONDS} seconds of silence before responding, and never start or finish my sentences for me.
 If you think I'm done, wait one more beat before you talk. Never talk over me.
 {revisit_block}
-Timing: keep the conversation to about {minutes} minutes. Then switch to ENGLISH for the feedback
-(the feedback must be in English, not {language}) and tell me out loud:
-1. The mistakes I made, with the correct way to say each one and why.
-2. My highlights: what I did well.
-3. What I could do to improve.
-Then ask me: "Do you want to save this session for later reference?" and wait for my answer.
+HARD RULES FOR THE CALL. Put these in the call's brief exactly as written; they override any
+default call length or habit you have saved:
+- Start the call in {language} (a short {language} greeting, not English).
+- This call is exactly {minutes} minutes of {language}. The voice doesn't see a clock, so as a guide,
+  after about {minutes * 3} of your questions (roughly 3 a minute) stop the conversation, even mid-topic.
+- At that point switch COMPLETELY to ENGLISH. Say, in English: "OK, let's stop there. Here's your feedback."
+  Everything from here to the end of the call is in English only, even if I answer in {language}.
+  {language} is allowed only when quoting what I said and the correct version.
+- Feedback, in English: (1) each mistake I made, the correct way to say it, and why;
+  (2) my highlights, what I did well; (3) what I could do to improve.
+- Then ask, in English: "Do you want to save this session for later reference?"
+- As soon as I answer (yes or no), say "Saved." or "OK, not saved.", then "Goodbye!", and HANG UP
+  immediately. No more questions or wrap-up talk.
+- If at any point I say I want to stop or end the call, go straight to the English feedback, then the
+  save question, then hang up.
 
-After the call, also email me a detailed written report with these sections:
-Summary; Fluency; Every mistake (what I said, the correction, the rule, and another example);
-Highlights; Improvements with a short drill for each; Vocabulary from the session;
-Focus for next session; and the full transcript.
+{EMAIL_ON if email_report else EMAIL_OFF}
 
 After the call ends, {RESULT_FORMAT}"""
 
@@ -167,7 +182,7 @@ async def run_session(session_id: int) -> None:
 
         brief = build_brief(s["language"], s["level"], s["duration_minutes"], s["topic"],
                             db.recent_mistakes(s["language"]), db.last_focus(s["language"]),
-                            scenarios.get(s.get("scenario")))
+                            scenarios.get(s.get("scenario")), bool(s.get("email_report")))
         started = datetime.now(timezone.utc)
         call_deadline_min = s["duration_minutes"] + 10
 
@@ -240,10 +255,22 @@ def _explain(exc: BaseException) -> str:
 # ---------------------------------------------------------------- scheduler
 
 def start_session(schedule_id: int | None, topic: str | None, language: str, level: str, minutes: int,
-                  scenario: str | None = None) -> int:
-    session_id = db.create_session(schedule_id, topic, language, level, minutes, scenario)
-    asyncio.create_task(run_session(session_id))
+                  scenario: str | None = None, email_report: bool = False) -> int:
+    session_id = db.create_session(schedule_id, topic, language, level, minutes, scenario, email_report)
+    task = asyncio.create_task(run_session(session_id))
+    _tasks[session_id] = task
+    task.add_done_callback(lambda _t: _tasks.pop(session_id, None))
     return session_id
+
+
+def cancel_session(session_id: int) -> None:
+    """Stop following a session and free the app to start another.
+    Note: if Fo has already placed the call, hang up on your phone; this only stops Hiwar waiting."""
+    task = _tasks.pop(session_id, None)
+    if task and not task.done():
+        task.cancel()
+    _running.discard(session_id)
+    db.update_session(session_id, status="failed", progress="Cancelled", ended_at=db.now_iso())
 
 
 async def scheduler_loop() -> None:
@@ -264,7 +291,7 @@ async def scheduler_loop() -> None:
                     db.update_session(sid, status="failed", progress="Skipped: another session was in progress")
                     continue
                 start_session(sch["id"], sch["topic"], sch["language"], sch["level"], sch["duration_minutes"],
-                              sch.get("scenario"))
+                              sch.get("scenario"), bool(sch.get("email_report")))
         except Exception:
             log.exception("Scheduler tick failed")
         await asyncio.sleep(20)

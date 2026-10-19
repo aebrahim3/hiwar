@@ -1,72 +1,89 @@
-# Hiwar Android: networking layer setup
+# Hiwar Android app: setup
 
-Drop these files into a new Compose project (Empty Activity, package `com.hiwar.app`;
-if you use a different package, update the `package` lines and imports).
+The whole app is written: home, live call, breakdown (with share card), schedules + editor,
+saved sessions, and progress. You create the Android Studio project, add a few lines of
+config, and copy these files in. About 15 minutes.
+
+## 1. Create the project
+
+Android Studio → **New Project → Empty Activity**
+- Name: `Hiwar`
+- Package name: `com.hiwar.app`
+- Save location: `C:\Users\User\AndroidStudioProjects\Hiwar\android`
+- Language: Kotlin, Build configuration language: Kotlin DSL
+- Minimum SDK: API 26 or higher
+
+Let it finish syncing once before changing anything.
+
+## 2. Copy the code in
+
+From this folder, copy everything under `app/src/main/` into the new project's `app/src/main/`,
+letting it **overwrite** `MainActivity.kt` and `ui/theme/Theme.kt`.
 
 ```
 app/src/main/java/com/hiwar/app/
-  data/remote/dto/Dtos.kt      data classes matching the backend JSON
-  data/remote/HiwarApi.kt      Retrofit interface, one function per endpoint
-  data/HiwarRepository.kt      what ViewModels call; returns Result<T>, follows live sessions
-  di/NetworkModule.kt          Hilt: builds Json, OkHttp, Retrofit
-  ui/practice/PracticeViewModel.kt   live session screen: start, follow the call, show breakdown, save
-  ui/share/ShareCard.kt        share card composable + "Share" button (image + text to X etc.)
+  MainActivity.kt                    starts the app
+  di/NetworkModule.kt                AppContainer: Retrofit + repository (BASE_URL is here)
+  data/HiwarRepository.kt            the only class screens talk to
+  data/remote/HiwarApi.kt            one function per backend endpoint
+  data/remote/dto/Dtos.kt            data classes matching the backend JSON
+  ui/AppNav.kt                       screen list + back stack
+  ui/theme/Theme.kt                  colours (overwrites the template's)
+  ui/common/Components.kt            shared UI pieces and date helpers
+  ui/home/HomeScreen.kt              scene picker, level, length, "Call me now", upcoming
+  ui/practice/PracticeViewModel.kt   starts a session and follows it
+  ui/practice/LiveSessionScreen.kt   pulsing "Fo is calling" screen
+  ui/session/SessionDetailScreen.kt  breakdown, save toggle, transcript, share card
+  ui/schedules/SchedulesScreen.kt    schedule list, pause/resume, calendar status, delete
+  ui/schedules/ScheduleEditorScreen.kt  new schedule form (time/date pickers, calendar switch)
+  ui/library/LibraryScreen.kt        saved / all sessions
+  ui/progress/ProgressScreen.kt      streak, minutes, charts, recent sessions
+  ui/share/ShareCard.kt              shareable card image + share sheet
 app/src/main/res/xml/network_security_config.xml
-app/src/main/res/xml/file_paths.xml               lets the share sheet read the card image
+app/src/main/res/xml/file_paths.xml
 ```
 
-## 1. Gradle (`app/build.gradle.kts`)
+The template's `ui/theme/Color.kt` and `Type.kt` can stay; they're just unused.
 
-Versions below are known to work together; newer ones are fine if they match your Kotlin version.
+## 3. Gradle (`app/build.gradle.kts`)
+
+Add the serialization plugin to the `plugins { }` block. Use the **same version as `kotlin`**
+in `gradle/libs.versions.toml` (e.g. `2.1.0`):
 
 ```kotlin
 plugins {
-    // ...existing plugins
-    id("org.jetbrains.kotlin.plugin.serialization") version "<your Kotlin version>"
-    id("com.google.dagger.hilt.android")
-    id("com.google.devtools.ksp")
-}
-
-android {
-    defaultConfig {
-        // Emulator -> your computer. On a real phone use your LAN IP or ngrok URL. Must end with "/".
-        buildConfigField("String", "BASE_URL", "\"http://10.0.2.2:8000/\"")
-    }
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-}
-
-dependencies {
-    implementation("com.squareup.retrofit2:retrofit:2.11.0")
-    implementation("com.squareup.retrofit2:converter-kotlinx-serialization:2.11.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-
-    implementation("com.google.dagger:hilt-android:2.52")
-    ksp("com.google.dagger:hilt-compiler:2.52")
-    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+    // ...keep the existing lines...
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.1.0"   // <- your kotlin version
 }
 ```
 
-In the project-level `build.gradle.kts`, declare the Hilt and KSP plugins with `apply false`
-(same as your other Hilt projects).
+Add these to `dependencies { }`:
 
-## 2. Manifest
+```kotlin
+implementation("com.squareup.retrofit2:retrofit:2.11.0")
+implementation("com.squareup.retrofit2:converter-kotlinx-serialization:2.11.0")
+implementation("com.squareup.okhttp3:okhttp:4.12.0")
+implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+```
 
+Compose, Material 3 and core-ktx are already in the template. The share card needs Compose
+BOM `2024.09.00` or newer (any recent template has it). Click **Sync Now**.
+
+## 4. Manifest (`app/src/main/AndroidManifest.xml`)
+
+Above `<application>`:
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
-
-<application
-    android:name=".HiwarApp"
-    android:networkSecurityConfig="@xml/network_security_config"
-    ... >
 ```
 
-For the share card, add this inside `<application>`:
+Add this attribute to the `<application ...>` tag:
+```xml
+android:networkSecurityConfig="@xml/network_security_config"
+```
 
+And inside `<application>` (for the share card):
 ```xml
 <provider
     android:name="androidx.core.content.FileProvider"
@@ -78,53 +95,22 @@ For the share card, add this inside `<application>`:
         android:resource="@xml/file_paths" />
 </provider>
 ```
-`ShareCard.kt` needs Compose UI 1.7+ (Compose BOM 2024.09.00 or newer) for `rememberGraphicsLayer`.
 
-`network_security_config.xml` allows plain HTTP only to `10.0.2.2` and `localhost`.
-For a real phone on Wi-Fi, add your computer's LAN IP there too.
+## 5. Run it
 
-## 3. Application class and Activity
+1. Start the backend: `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
+2. Run the app on the **emulator**. It talks to `http://10.0.2.2:8000/` (your computer).
+3. Tap **Call me now**. You should see the live screen, then your breakdown.
 
-```kotlin
-@HiltAndroidApp
-class HiwarApp : Application()
-```
+**Real phone instead of the emulator?** In `di/NetworkModule.kt` set `BASE_URL` to
+`http://YOUR-PC-LAN-IP:8000/` (find it with `ipconfig`), and add that IP as another
+`<domain>` in `network_security_config.xml`. Phone and PC must be on the same Wi-Fi.
 
-Put `@AndroidEntryPoint` on `MainActivity`, then use `hiltViewModel<PracticeViewModel>()` in Compose.
+## If the build fails
 
-## 4. Check it works
-
-Start the backend (`uvicorn app.main:app --host 0.0.0.0 --port 8000`), run the app on the emulator,
-and call `repository.health()` once. Logcat (tag `okhttp.OkHttpClient`) shows the request and JSON.
-
-## Screens to build
-
-1. **Home**: "Start a session now" with a scenario picker (`repository.scenarios()`, plus a
-   "Free conversation" option that sends `scenario = null`), level and length; plus your upcoming
-   schedules and the current streak (`repository.progress()`).
-   `PracticeViewModel` is created here and jumps to the live screen if a session is already running.
-2. **Live session**: show `session.progress` and a call animation while status is
-   `calling / in_call / summarizing`. Sessions last as long as the call, so keep this simple.
-3. **Breakdown**: summary, fluency, mistakes (said → correction, with category, explanation and an
-   extra example; group or colour by `category`), highlights, improvements, vocabulary,
-   "next focus", the transcript, and a save toggle (`PracticeViewModel.setSaved`).
-   Older sessions may have empty `fluency`/`vocabulary`/`nextFocus`; hide empty sections.
-   Add the share card at the bottom: `repository.shareCard(id)` → `ShareCardWithButton(card)`.
-4. **Schedule editor**: title, scenario or topic, level, length, frequency (once / daily / weekly /
-   every N days), weekday chips for weekly, a time picker, a date picker for once, and an
-   "Add to Google Calendar" switch (`addToCalendar`). Send `timeOfDay` as "HH:mm".
-   In the schedule list, show `calendarStatus` (adding / added / failed + `calendarNote`), with a
-   retry button for failed ones (`repository.addToCalendar(id)`).
-5. **Library**: `repository.savedSessions()`; tap one to open its breakdown.
-6. **Progress**: `repository.progress()`. Big numbers for streak, total minutes and sessions; a bar
-   chart from `last7Days`; mistakes by category (bars from `mistakesByCategory`); a line of mistakes per
-   session from `timeline`; and, once `trend` exists, "Mistakes per session: 4.5 → 2.0".
-   Use `progress(includeMock = true)` while building it, before you have real sessions.
-
-## Things to know
-- Errors come back as `Result.failure` with a readable message (the backend's `detail`, or
-  "Can't reach the Hiwar server" when it's down).
-- `CreateScheduleRequest.timezone` defaults to the phone's timezone, so "19:00" means 7pm where you are.
-- `next_run_at` is UTC; convert it for display:
-  `Instant.parse(nextRunAt).atZone(ZoneId.systemDefault())`.
-- `saved == null` means you didn't answer Fo's save question on the call; show the toggle as off.
+Paste the **first** red error from the Build panel. The usual suspects:
+- `Unresolved reference: serialization` → the serialization plugin line is missing or its version
+  doesn't match your Kotlin version.
+- `Unresolved reference: rememberGraphicsLayer` → Compose BOM is older than 2024.09; bump
+  `composeBom` in `libs.versions.toml`.
+- `Cleartext HTTP traffic not permitted` at runtime → the manifest attribute from step 4 is missing.
